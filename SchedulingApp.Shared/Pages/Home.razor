@@ -1,0 +1,205 @@
+﻿@page "/"
+@using Microsoft.EntityFrameworkCore
+@using SchedulingApp.Shared.Data
+@using SchedulingApp.Shared.Models
+@using SchedulingApp.Shared.Services
+@inject IFormFactor FormFactor
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Navigation
+
+<PageTitle>Home</PageTitle>
+
+<h1>Hello, Tyler</h1>
+
+<p>Welcome to your scheduling app running on <em>@factor</em> using <em>@platform</em>.</p>
+
+@if (!string.IsNullOrEmpty(errorMessage))
+{
+    <div role="alert" class="alert alert-danger">@errorMessage</div>
+}
+
+<div class="row">
+    <div class="col-md-4 mb-4">
+        <label class="form-label fw-bold">Calendar</label>
+        <div class="card p-3 shadow-sm">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => ChangeMonth(-1)">&lt;</button>
+                <span class="fw-bold">@currentMonth.ToString("MMMM yyyy")</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => ChangeMonth(1)">&gt;</button>
+            </div>
+
+            <div class="row row-cols-7 text-center g-1 text-muted small fw-bold mb-2">
+                <div class="col">Su</div><div class="col">Mo</div><div class="col">Tu</div>
+                <div class="col">We</div><div class="col">Th</div><div class="col">Fr</div><div class="col">Sa</div>
+            </div>
+
+            <div class="row row-cols-7 g-1 text-center">
+                @for (int i = 0; i < FirstDayOffset; i++)
+                {
+                    <div class="col"></div>
+                }
+
+                @for (int day = 1; day <= DateTime.DaysInMonth(currentMonth.Year, currentMonth.Month); day++)
+                {
+                    var loopDate = new DateTime(currentMonth.Year, currentMonth.Month, day);
+                    var isSelected = loopDate == selectedDate;
+                    var isToday = loopDate == DateTime.Today;
+                    var hasAppointments = appointments.Any(a => a.StartDateTime.Date == loopDate);
+
+                    <div class="col home-calendar-day @(isSelected ? "active" : "") @(isToday && !isSelected ? "today" : "")"
+                         @onclick="() => SelectDate(loopDate)">
+                        @day
+                        @if (hasAppointments)
+                        {
+                            <div class="appt-dot"></div>
+                        }
+                    </div>
+                }
+            </div>
+
+            <button type="button" class="btn btn-sm btn-link mt-2" @onclick="GoToToday">Today</button>
+        </div>
+    </div>
+
+    <div class="col-md-8 mb-4">
+        <label class="form-label fw-bold">
+            @(selectedDate == DateTime.Today ? "Today's Appointments" : "Appointments") - @selectedDate.ToLongDateString()
+        </label>
+        <div class="card p-3 shadow-sm">
+            <table class="table table-sm mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th>Start Time</th>
+                        <th>End Time</th>
+                        <th>Client</th>
+                        <th>Service</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var slotStart in timeSlots)
+                    {
+                        var slotDateTime = selectedDate.Add(slotStart);
+                        var booking = appointments.FirstOrDefault(b => slotDateTime >= b.StartDateTime && slotDateTime < b.EndDateTime);
+
+                        var isOpenSlot = booking is null && slotDateTime >= DateTime.Now;
+                        <tr class="@(booking is not null ? "table-primary" : "")"
+                            style="cursor: @(booking is not null || isOpenSlot ? "pointer" : "default");"
+                            title="@(isOpenSlot ? "Book this slot" : null)"
+                            @onclick="() => OpenInSchedule(booking, slotDateTime)">
+                            <td>@slotStart.ToString(@"hh\:mm")</td>
+                            <td>@slotStart.Add(TimeSpan.FromHours(1)).ToString(@"hh\:mm")</td>
+                            <td class="text-nowrap">@(booking?.Client?.Name ?? (booking is not null ? "(no client)" : ""))</td>
+                            <td>@booking?.ServiceType</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+
+            @if (!DayAppointments.Any())
+            {
+                <p class="text-muted small mt-2 mb-0">No appointments scheduled for this day.</p>
+            }
+        </div>
+    </div>
+</div>
+
+<style>
+    .row-cols-7 > * {
+        flex: 0 0 auto;
+        width: 14.2857142857%;
+    }
+
+    .home-calendar-day {
+        cursor: pointer;
+        border-radius: 4px;
+        padding: 8px 0;
+        transition: 0.2s;
+        position: relative;
+    }
+
+    .home-calendar-day:hover:not(.active) {
+        background-color: #e9ecef;
+    }
+
+    .home-calendar-day.active {
+        background-color: #0d6efd;
+        color: white;
+    }
+
+    .home-calendar-day.today {
+        border: 1px solid #0d6efd;
+    }
+
+    .home-calendar-day .appt-dot {
+        width: 5px;
+        height: 5px;
+        border-radius: 50%;
+        background-color: #198754;
+        margin: 2px auto 0;
+    }
+
+    .home-calendar-day.active .appt-dot {
+        background-color: white;
+    }
+</style>
+
+@code {
+    private string factor => FormFactor.GetFormFactor();
+    private string platform => FormFactor.GetPlatform();
+
+    private static readonly TimeSpan[] timeSlots =
+        Enumerable.Range(9, 7).Select(h => TimeSpan.FromHours(h)).ToArray();
+
+    private List<Appointment> appointments = new();
+    private DateTime selectedDate = DateTime.Today;
+    private DateTime currentMonth = new(DateTime.Today.Year, DateTime.Today.Month, 1);
+    private string? errorMessage;
+
+    private int FirstDayOffset => (int)currentMonth.DayOfWeek;
+
+    private IEnumerable<Appointment> DayAppointments =>
+        appointments.Where(a => a.StartDateTime.Date == selectedDate);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            appointments = await db.Appointments
+                .AsNoTracking()
+                .Include(a => a.Client)
+                .ToListAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Could not load appointments: {ex.GetBaseException().Message}";
+        }
+    }
+
+    private void ChangeMonth(int direction) => currentMonth = currentMonth.AddMonths(direction);
+
+    private void SelectDate(DateTime date) => selectedDate = date.Date;
+
+    private void OpenInSchedule(Appointment? booking, DateTime slotDateTime)
+    {
+        if (booking is null)
+        {
+            if (slotDateTime < DateTime.Now) return;
+            Navigation.NavigateTo($"/schedule?date={slotDateTime:yyyy-MM-dd}&time={slotDateTime:HH\\:mm}");
+            return;
+        }
+
+        var url = $"/schedule?date={booking.StartDateTime:yyyy-MM-dd}";
+        if (booking.ClientId is int clientId)
+        {
+            url += $"&clientId={clientId}";
+        }
+        Navigation.NavigateTo(url);
+    }
+
+    private void GoToToday()
+    {
+        selectedDate = DateTime.Today;
+        currentMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+    }
+}

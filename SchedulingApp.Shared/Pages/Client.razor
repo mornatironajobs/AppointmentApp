@@ -1,0 +1,257 @@
+﻿@page "/client"
+@page "/client/{ClientId:int}"
+@using Microsoft.EntityFrameworkCore
+@using SchedulingApp.Shared.Components
+@using SchedulingApp.Shared.Data
+@using SchedulingApp.Shared.Models
+@using System.Text.RegularExpressions
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Navigation
+
+<PageTitle>@(IsEdit ? "Edit Client" : "Add New Client")</PageTitle>
+
+<h3>@(IsEdit ? "Edit Client" : "Add New Client")</h3>
+
+<EditForm Model="client" OnValidSubmit="SaveAsync" FormName="createClient">
+    <DataAnnotationsValidator />
+    <ValidationSummary class="text-danger" />
+
+    <div class="mb-3">
+        <label for="id" class="form-label">Client Id</label>
+        <input id="id" class="form-control" value="@nextId" readonly disabled />
+    </div>
+    <div class="mb-3">
+        <label for="name" class="form-label">Name<span class="required-indicator">*</span></label>
+        <InputTextImmediate id="name" class="form-control" @bind-Value="client.Name" />
+        <ValidationMessage For="() => client.Name" class="text-danger" />
+    </div>
+    <div class="mb-3">
+        <label for="email" class="form-label">Email<span class="required-indicator">*</span></label>
+        <InputTextImmediate id="email" type="email" class="form-control" @bind-Value="client.Email" />
+        <ValidationMessage For="() => client.Email" class="text-danger" />
+    </div>
+    <div class="mb-3">
+        <label for="phone" class="form-label">Phone Number<span class="required-indicator">*</span></label>
+        <InputTextImmediate id="phone" type="tel" inputmode="tel" maxlength="14" placeholder="(555) 123-4567" class="form-control"
+                   @bind-Value:get="client.PhoneNumber" @bind-Value:set="OnPhoneChanged"
+                   onkeydown="return event.ctrlKey || event.metaKey || event.key.length > 1 || /[0-9()\-.\s]/.test(event.key);" />
+        <ValidationMessage For="() => client.PhoneNumber" class="text-danger" />
+    </div>
+    <div class="mb-3">
+        <label for="address" class="form-label">Address</label>
+        <InputTextImmediate id="address" class="form-control" @bind-Value="client.Address" />
+    </div>
+    <div class="mb-3">
+        <label for="city" class="form-label">City</label>
+        <InputText id="city" class="form-control" @bind-Value="client.City" />
+    </div>
+    <div class="mb-3">
+        <label for="state" class="form-label">State</label>
+        <InputText id="state" class="form-control" @bind-Value="client.State" />
+    </div>
+    <div class="mb-3">
+        <label for="zip" class="form-label">
+            Zip Code
+            @if (!string.IsNullOrWhiteSpace(client.Address))
+            {
+                <span class="required-indicator">*</span>
+            }
+        </label>
+        <InputTextImmediate id="zip" inputmode="numeric" maxlength="10" placeholder="12345" class="form-control"
+                   @bind-Value:get="client.ZipCode" @bind-Value:set="OnZipChanged"
+                   onkeydown="return event.ctrlKey || event.metaKey || event.key.length > 1 || /[0-9\-]/.test(event.key);" />
+        <ValidationMessage For="() => client.ZipCode" class="text-danger" />
+    </div>
+
+    <p class="text-muted small"><span class="required-indicator">*</span> Required field</p>
+
+    <button type="submit" class="btn btn-primary" disabled="@(!CanSave)">@(IsEdit ? "Save" : "Create")</button>
+    <button type="button" class="btn btn-secondary ms-2" @onclick="Cancel">Cancel</button>
+    @if (IsEdit)
+    {
+        <button type="button" class="btn btn-danger ms-2" @onclick="() => showDeleteConfirm = true">Delete</button>
+    }
+</EditForm>
+
+@if (showDeleteConfirm)
+{
+    <div class="modal fade show d-block" tabindex="-1" role="dialog" aria-modal="true" style="background-color: rgba(0,0,0,0.5);">
+        <div class="modal-dialog modal-dialog-centered" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Delete Client</h5>
+                    <button type="button" class="btn-close" aria-label="Close" @onclick="() => showDeleteConfirm = false"></button>
+                </div>
+                <div class="modal-body">
+                    <p>Are you sure you want to delete <strong>@client.Name</strong>?</p>
+                    <p class="text-danger small mb-0">All appointments for this client will also be deleted. This cannot be undone.</p>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" @onclick="() => showDeleteConfirm = false">Cancel</button>
+                    <button type="button" class="btn btn-danger" @onclick="DeleteAsync">Delete</button>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (!string.IsNullOrEmpty(message))
+{
+    <p role="status" class="mt-2">@message</p>
+}
+
+@if (!string.IsNullOrEmpty(errorMessage))
+{
+    <div role="alert" class="alert alert-danger mt-2">@errorMessage</div>
+}
+
+@code {
+    [Parameter]
+    public int? ClientId { get; set; }
+
+    [SupplyParameterFromForm]
+    private ClientModel client { get; set; } = new();
+
+    private string? message;
+    private string? errorMessage;
+    private bool showDeleteConfirm;
+
+    private async Task DeleteAsync()
+    {
+        showDeleteConfirm = false;
+        errorMessage = null;
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            await using var transaction = await db.Database.BeginTransactionAsync();
+            await db.Appointments.Where(a => a.ClientId == ClientId).ExecuteDeleteAsync();
+            await db.Clients.Where(c => c.Id == ClientId).ExecuteDeleteAsync();
+            await transaction.CommitAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Could not delete client: {ex.GetBaseException().Message}";
+            return;
+        }
+
+        Navigation.NavigateTo("/schedule");
+    }
+    private int nextId = 1;
+
+    private bool IsEdit => ClientId.HasValue;
+
+    private static readonly Regex PhoneRegex = new(ClientModel.PhonePattern, RegexOptions.Compiled);
+    private static readonly Regex ZipRegex = new(ClientModel.ZipPattern, RegexOptions.Compiled);
+    private static readonly Regex DisallowedPhoneChars = new(@"[^0-9()\-.\s]", RegexOptions.Compiled);
+    private static readonly Regex DisallowedZipChars = new(@"[^0-9\-]", RegexOptions.Compiled);
+
+    private bool ZipIsValid =>
+        string.IsNullOrWhiteSpace(client.ZipCode)
+            ? string.IsNullOrWhiteSpace(client.Address)
+            : ZipRegex.IsMatch(client.ZipCode);
+
+    private bool CanSave =>
+        !string.IsNullOrWhiteSpace(client.Name) &&
+        !string.IsNullOrWhiteSpace(client.Email) &&
+        PhoneRegex.IsMatch(client.PhoneNumber ?? string.Empty) &&
+        ZipIsValid;
+
+    private void OnPhoneChanged(string? value) =>
+        client.PhoneNumber = DisallowedPhoneChars.Replace(value ?? string.Empty, string.Empty);
+
+    private void OnZipChanged(string? value) =>
+        client.ZipCode = DisallowedZipChars.Replace(value ?? string.Empty, string.Empty);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        message = null;
+
+        if (IsEdit)
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            var existing = await db.Clients.AsNoTracking().FirstOrDefaultAsync(c => c.Id == ClientId);
+            if (existing is null)
+            {
+                message = $"Client {ClientId} was not found.";
+                client = new();
+            }
+            else
+            {
+                client = existing;
+            }
+            nextId = ClientId!.Value;
+        }
+        else
+        {
+            client = new();
+            await LoadNextIdAsync();
+        }
+    }
+
+    private async Task LoadNextIdAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        nextId = (await db.Clients.MaxAsync(c => (int?)c.Id) ?? 0) + 1;
+    }
+
+    private async Task SaveAsync()
+    {
+        if (IsEdit)
+        {
+            await UpdateAsync();
+        }
+        else
+        {
+            await CreateAsync();
+        }
+    }
+
+    private async Task UpdateAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        client.Id = ClientId!.Value; // The Id comes from the route; ignore any client-supplied value.
+        db.Clients.Update(client);
+        if (!await TrySaveAsync(db))
+            return;
+
+        Navigation.NavigateTo($"/schedule?clientId={client.Id}");
+    }
+
+    private void Cancel() =>
+        Navigation.NavigateTo(IsEdit ? $"/schedule?clientId={ClientId}" : "/schedule");
+
+    private async Task<bool> TrySaveAsync(AppDbContext db)
+    {
+        message = null;
+        errorMessage = null;
+        try
+        {
+            await db.SaveChangesAsync();
+            return true;
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            errorMessage = "This client was changed or deleted by someone else. Please reload and try again.";
+        }
+        catch (DbUpdateException ex)
+        {
+            errorMessage = $"Could not save client: {ex.GetBaseException().Message}";
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"An unexpected error occurred while saving: {ex.Message}";
+        }
+        return false;
+    }
+
+    private async Task CreateAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        client.Id = 0; // The database assigns the Id; ignore any client-supplied value.
+        db.Clients.Add(client);
+        if (!await TrySaveAsync(db))
+            return;
+
+        Navigation.NavigateTo($"/schedule?clientId={client.Id}");
+    }
+}

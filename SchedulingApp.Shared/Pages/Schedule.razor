@@ -1,0 +1,616 @@
+﻿@page "/schedule"
+@using SchedulingApp.Shared.PageModels
+@using SchedulingApp.Shared.Data
+@using Microsoft.EntityFrameworkCore
+@using SchedulingApp.Shared.Models
+@inject IDbContextFactory<AppDbContext> DbFactory
+
+
+<PageTitle>Schedule</PageTitle>
+
+<h1>Schedule Information</h1>
+
+<div class="form-group">
+    <label>Select Client:</label>
+
+    <input type="search" class="form-control mb-2" placeholder="@(HasClients ? "Search by first or last name..." : "No clients to search")"
+           disabled="@(!HasClients)"
+           @bind="searchText" @bind:event="oninput" />
+
+    <div class="border rounded" style="max-height: 200px; overflow-y: auto;">
+        <table class="table table-hover table-sm mb-0">
+            <thead class="table-light" style="position: sticky; top: 0;">
+                <tr>
+                    <th>Name</th>
+                    <th>Phone Number</th>
+                    <th>Email</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var item in FilteredClients)
+                {
+                    <tr class="@(IsSelected(item.Id) ? "table-primary" : "")"
+                        style="cursor: pointer;"
+                        @onclick="() => ToggleSelection(item.Id)">
+                        <td>@item.Name</td>
+                        <td>@item.PhoneNumber</td>
+                        <td>@item.Email</td>
+                        <td class="text-end">
+                            <a href="client/@item.Id" class="btn btn-sm btn-outline-primary" @onclick:stopPropagation="true">Edit</a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <br/>
+
+    <a class="btn btn-primary" href="client">Add New Client</a>
+    <br /><br />
+
+</div>
+
+<form method="post" id="schedulingForm">
+    @if (HasSelectedClient)
+    {
+        <div class="mb-4">
+            <label class="form-label fw-bold">Scheduled Appointments for @string.Join(", ", SelectedNames)</label>
+            <div class="border rounded" style="max-height: 200px; overflow-y: auto;">
+                <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light" style="position: sticky; top: 0;">
+                        <tr>
+                            <th>Date</th>
+                            <th>Start Time</th>
+                            <th>End Time</th>
+                            <th>Service</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (!SelectedClientAppointments.Any())
+                        {
+                            <tr><td colspan="5" class="text-muted">No appointments.</td></tr>
+                        }
+                        @foreach (var appt in SelectedClientAppointments)
+                        {
+                            var apptLoop = appt;
+                            var isPastAppt = apptLoop.EndDateTime < DateTime.Now;
+                            <tr class="@(isPastAppt ? "text-muted" : "")" style="cursor: @(isPastAppt ? "default" : "pointer");"
+                                @onclick="() => { if (!isPastAppt) GoToAppointment(apptLoop); }">
+                                <td>@apptLoop.StartDateTime.ToShortDateString()</td>
+                                <td>@apptLoop.StartDateTime.ToString("HH:mm")</td>
+                                <td>@apptLoop.EndDateTime.ToString("HH:mm")</td>
+                                <td>@apptLoop.ServiceType</td>
+                                <td class="text-end">
+                                    @if (isPastAppt)
+                                    {
+                                        <span class="badge bg-secondary">Past</span>
+                                    }
+                                    else if (pendingCancelId == apptLoop.Id)
+                                    {
+                                        <span class="small me-2">Cancel this appointment?</span>
+                                        <button type="button" class="btn btn-sm btn-danger me-1" @onclick="() => CancelAppointmentAsync(apptLoop.Id)" @onclick:stopPropagation="true">Yes</button>
+                                        <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => pendingCancelId = null" @onclick:stopPropagation="true">No</button>
+                                    }
+                                    else
+                                    {
+                                        <button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => pendingCancelId = apptLoop.Id" @onclick:stopPropagation="true">Cancel</button>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            @if (!string.IsNullOrEmpty(cancelErrorMessage))
+            {
+                <div role="alert" class="alert alert-danger mt-2">@cancelErrorMessage</div>
+            }
+        </div>
+    }
+    <div class="row">
+        <!-- Step 1: Calendar Column -->
+        <div class="col-md-4 mb-4">
+            <label class="form-label fw-bold">Select a Date</label>
+            @if (!HasSelectedClient)
+            {
+                <p class="small text-muted mb-1">Select a client first to choose a date.</p>
+            }
+            <div class="card p-3 shadow-sm">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => ChangeMonth(-1)">&lt;</button>
+                    <span class="fw-bold">@currentDate.ToString("MMMM yyyy")</span>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="() => ChangeMonth(1)">&gt;</button>
+                </div>
+
+                <div class="row row-cols-7 text-center g-1 text-muted small fw-bold mb-2">
+                    <div class="col">Su</div><div class="col">Mo</div><div class="col">Tu</div>
+                    <div class="col">We</div><div class="col">Th</div><div class="col">Fr</div><div class="col">Sa</div>
+                </div>
+
+                <div class="row row-cols-7 g-1 text-center">
+                    <!-- Render Blank Padding Days -->
+                    @for (int i = 0; i < GetFirstDayOffset(); i++)
+                    {
+                        <div class="col calendar-day disabled"></div>
+                    }
+
+                    <!-- Render Interactive Calendar Days -->
+                    @for (int day = 1; day <= DateTime.DaysInMonth(currentDate.Year, currentDate.Month); day++)
+                    {
+                        var dayLoop = day; // Avoid loop variable capture issues
+                        var loopDate = new DateTime(currentDate.Year, currentDate.Month, dayLoop);
+                        var activeClass = selectedDate?.Date == loopDate.Date ? "active" : "";
+                        var isPast = loopDate.Date < DateTime.Today;
+                        var isDisabled = isPast || !HasSelectedClient;
+
+                        <div class="col calendar-day @activeClass @(isDisabled ? "disabled" : "")"
+                             aria-disabled="@isDisabled"
+                             @onclick="() => SelectDate(loopDate)">
+                            @dayLoop
+                        </div>
+                    }
+                </div>
+            </div>
+        </div>
+
+        <!-- Step 2: Time Slots Column -->
+        @if (selectedDate.HasValue)
+        {
+            <div class="col-md-8 mb-4">
+                <label class="form-label fw-bold">2. Select an Available Time</label>
+                <div class="card p-3 shadow-sm">
+                    <p class="small text-muted mb-2">Selected Date: <span class="fw-bold">@selectedDate.Value.ToShortDateString()</span></p>
+
+                    <table class="table table-sm table-hover mb-3" name="timeSlotsTable">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Start Time</th>
+                                <th>End Time</th>
+                                <th>Client</th>
+                                <th>Service</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var time in availableStartTimes)
+                            {
+                                var slotStart = time;
+                                var slotEnd = TimeSpan.Parse(slotStart).Add(TimeSpan.FromHours(1)).ToString(@"hh\:mm");
+                                var booking = GetBooking(slotStart);
+                                var isBooked = booking is not null;
+                                var isPastSlot = !isBooked && IsSlotInPast(slotStart);
+                                var isUnavailable = isBooked || isPastSlot;
+                                var isActive = selectedStartTimeStr == slotStart && !isUnavailable;
+
+                                <tr class="@(isUnavailable ? "table-secondary text-muted" : isActive ? "table-primary" : "")"
+                                    style="cursor: @(isUnavailable ? "not-allowed" : "pointer");"
+                                    aria-disabled="@isUnavailable"
+                                    @onclick="() => SelectTimeSlot(slotStart)">
+                                    <td>@slotStart</td>
+                                    <td>@slotEnd</td>
+                                    <td class="text-nowrap">
+                                        @if (booking?.Client is not null)
+                                        {
+                                            <a href="client/@booking.Client.Id" style="cursor: pointer;" @onclick:stopPropagation="true">@booking.Client.Name</a>
+                                        }
+                                    </td>
+                                    <td>
+                                        @if (isBooked)
+                                        {
+                                            @booking!.ServiceType
+                                        }
+                                        else if (isPastSlot)
+                                        {
+                                            <span class="small">Past</span>
+                                        }
+                                        else
+                                        {
+                                            <select class="form-select form-select-sm" aria-label="Service for @slotStart"
+                                                    value="@GetSlotService(slotStart)"
+                                                    @onchange="e => SetSlotService(slotStart, e.Value?.ToString())"
+                                                    @onclick:stopPropagation="true">
+                                                @foreach (var service in Enum.GetValues<ServiceType>())
+                                                {
+                                                    <option value="@service">@service</option>
+                                                }
+                                            </select>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+
+                    @if (noSlotsAvailable)
+                    {
+                        <span class="text-muted small">No available times on this date. Please select another date.</span>
+                    }
+                    else if (hasOverlapError)
+                    {
+                        <span class="text-danger small">This time slot overlaps with an existing booking!</span>
+                    }
+                    @if (!string.IsNullOrEmpty(bookingMessage))
+                    {
+                        <div role="status" class="alert alert-success py-1 px-2 mt-2 mb-0 small">@bookingMessage</div>
+                    }
+                    @if (!string.IsNullOrEmpty(bookingErrorMessage))
+                    {
+                        <div role="alert" class="alert alert-danger py-1 px-2 mt-2 mb-0 small">@bookingErrorMessage</div>
+                    }
+                </div>
+            </div>
+        }
+    </div>
+
+    <button type="button" class="btn btn-primary mt-3" @onclick="SubmitBooking"
+            disabled="@(selectedDate == null || hasOverlapError || noSlotsAvailable || string.IsNullOrEmpty(selectedStartTimeStr) || !SelectedNames.Any())">
+        Confirm Booking
+    </button>
+
+    <br /><br />    
+
+    @if (SelectedNames.Any())
+    {
+        <p role="status">Name: @string.Join(", ", SelectedNames)</p>
+    }
+
+</form>
+
+
+@code {
+
+    private SchedulePageModel Model { get; set; } = new SchedulePageModel();
+
+    private IEnumerable<string> SelectedNames =>
+        Model.ClientListModel.InformationList
+            .Where(c => Model.ClientListModel.SelectedItemIds.Contains(c.Id.ToString()))
+            .Select(c => c.Name);
+
+    private string searchText = string.Empty;
+
+    private bool HasClients => Model.ClientListModel.InformationList.Any();
+
+    private int? pendingCancelId;
+    private readonly Dictionary<string, ServiceType> slotServices = new();
+
+    private ServiceType GetSlotService(string slotStart) =>
+        slotServices.TryGetValue(slotStart, out var service) ? service : Enum.GetValues<ServiceType>().First();
+
+    private void SetSlotService(string slotStart, string? value)
+    {
+        if (Enum.TryParse<ServiceType>(value, out var service))
+        {
+            slotServices[slotStart] = service;
+        }
+        SelectTimeSlot(slotStart);
+    }
+    private string? cancelErrorMessage;
+
+    private int SelectedClientId =>
+        Model.ClientListModel.SelectedItemIds.Select(int.Parse).FirstOrDefault();
+
+    private IEnumerable<Appointment> SelectedClientAppointments =>
+        existingBookings
+            .Where(b => b.ClientId == SelectedClientId)
+            .OrderByDescending(b => b.StartDateTime);
+
+    private void GoToAppointment(Appointment appt)
+    {
+        var date = appt.StartDateTime.Date;
+        currentDate = new DateTime(date.Year, date.Month, 1);
+        SelectDate(date);
+    }
+
+    private async Task CancelAppointmentAsync(int appointmentId)
+    {
+        cancelErrorMessage = null;
+        try
+        {
+            await using var db = await DbFactory.CreateDbContextAsync();
+            await db.Appointments.Where(a => a.Id == appointmentId).ExecuteDeleteAsync();
+        }
+        catch (Exception ex)
+        {
+            cancelErrorMessage = $"Could not cancel appointment: {ex.GetBaseException().Message}";
+            return;
+        }
+        finally
+        {
+            pendingCancelId = null;
+        }
+
+        await LoadBookingsAsync();
+        if (selectedDate.HasValue)
+        {
+            SelectFirstAvailableSlot();
+        }
+    }
+
+    private IEnumerable<ClientModel> FilteredClients =>
+        string.IsNullOrWhiteSpace(searchText)
+            ? Model.ClientListModel.InformationList
+            : Model.ClientListModel.InformationList.Where(c =>
+                (c.Name ?? string.Empty)
+                    .Split(' ', StringSplitOptions.RemoveEmptyEntries)
+                    .Any(part => part.StartsWith(searchText.Trim(), StringComparison.OrdinalIgnoreCase)));
+
+    private bool HasSelectedClient => Model.ClientListModel.SelectedItemIds.Any();
+
+    private bool IsSelected(int id) =>
+        Model.ClientListModel.SelectedItemIds.Contains(id.ToString());
+
+    private void ToggleSelection(int id)
+    {
+        var key = id.ToString();
+        var isSelecting = !IsSelected(id);
+        Model.ClientListModel.SelectedItemIds = isSelecting ? [key] : [];
+
+        if (isSelecting)
+        {
+            if (keepPreselectedSlot && selectedDate.HasValue)
+            {
+                keepPreselectedSlot = false;
+                UpdateModelDateTimes();
+            }
+            else
+            {
+                NavigateCalendarToClient(id);
+            }
+        }
+        else
+        {
+            keepPreselectedSlot = false;
+            selectedDate = null;
+            hasOverlapError = false;
+        }
+    }
+
+    private bool keepPreselectedSlot;
+
+    private void NavigateCalendarToClient(int clientId)
+    {
+        var nextAppointment = existingBookings
+            .Where(b => b.ClientId == clientId && b.EndDateTime >= DateTime.Today)
+            .OrderBy(b => b.StartDateTime)
+            .FirstOrDefault();
+
+        var targetDate = nextAppointment is not null && nextAppointment.StartDateTime.Date >= DateTime.Today
+            ? nextAppointment.StartDateTime.Date
+            : DateTime.Today;
+
+        currentDate = new DateTime(targetDate.Year, targetDate.Month, 1);
+        SelectDate(targetDate);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Model.ClientListModel.LoadAsync(DbFactory);
+        await LoadBookingsAsync();
+
+        if (ClientIdFromQuery is int id && Model.ClientListModel.InformationList.Any(c => c.Id == id))
+        {
+            ToggleSelection(id);
+
+            if (DateFromQuery is DateTime date)
+            {
+                currentDate = new DateTime(date.Year, date.Month, 1);
+                if (date.Date >= DateTime.Today)
+                {
+                    SelectDate(date.Date);
+                }
+            }
+        }
+        else if (DateFromQuery is DateTime slotDate && slotDate.Date >= DateTime.Today)
+        {
+            // Coming from an empty slot on the Home page: preselect the date/time and wait for a client.
+            currentDate = new DateTime(slotDate.Year, slotDate.Month, 1);
+            selectedDate = slotDate.Date;
+            keepPreselectedSlot = true;
+
+            if (!string.IsNullOrEmpty(TimeFromQuery) && availableStartTimes.Contains(TimeFromQuery) && !IsTimeSlotBooked(TimeFromQuery))
+            {
+                SelectTimeSlot(TimeFromQuery);
+            }
+            else
+            {
+                SelectFirstAvailableSlot();
+            }
+        }
+    }
+
+    [SupplyParameterFromQuery(Name = "time")]
+    public string? TimeFromQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "date")]
+    public DateTime? DateFromQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "clientId")]
+    public int? ClientIdFromQuery { get; set; }
+
+    private async Task LoadBookingsAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        existingBookings = await db.Appointments
+            .AsNoTracking()
+            .Include(a => a.Client)
+            .ToListAsync();
+    }
+
+    private Appointment? GetBooking(string timeStr)
+    {
+        if (selectedDate == null) return null;
+
+        var checkingSlot = selectedDate.Value.Date.Add(TimeSpan.Parse(timeStr));
+        return existingBookings.FirstOrDefault(b => checkingSlot >= b.StartDateTime && checkingSlot < b.EndDateTime);
+    }
+
+        // Instantiate your decoupled custom data container class
+        private Appointment BookingInfo { get; set; } = new();
+
+        private DateTime currentDate = DateTime.Today;
+        private DateTime? selectedDate = null;
+        private bool hasOverlapError = false;
+        private bool noSlotsAvailable = false;
+        private string? bookingMessage;
+        private string? bookingErrorMessage;
+
+        private string selectedStartTimeStr = "09:00";
+        private string selectedEndTimeStr = "10:00";
+
+        // Hardcoded list of predefined scheduling options
+        private List<string> availableStartTimes = new() { "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00" };
+        private List<string> availableEndTimes = new() { "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00" };
+
+        // Bookings loaded from the database
+        private List<Appointment> existingBookings = new();
+
+        private int GetFirstDayOffset() => (int)new DateTime(currentDate.Year, currentDate.Month, 1).DayOfWeek;
+
+        private void ChangeMonth(int direction) => currentDate = currentDate.AddMonths(direction);
+
+        private void SelectDate(DateTime date)
+        {
+            if (!HasSelectedClient || date.Date < DateTime.Today) return;
+
+            selectedDate = date;
+            SelectFirstAvailableSlot();
+        }
+
+        private void SelectFirstAvailableSlot()
+        {
+            var freeSlot = availableStartTimes.FirstOrDefault(t => !IsTimeSlotBooked(t) && !IsSlotInPast(t));
+            if (freeSlot is null)
+            {
+                noSlotsAvailable = true;
+                hasOverlapError = false;
+                selectedStartTimeStr = string.Empty;
+                selectedEndTimeStr = string.Empty;
+                return;
+            }
+
+            SelectTimeSlot(freeSlot);
+        }
+
+        private void SelectTimeSlot(string startTime)
+        {
+            if (IsTimeSlotBooked(startTime) || IsSlotInPast(startTime)) return;
+
+            noSlotsAvailable = false;
+            selectedStartTimeStr = startTime;
+            selectedEndTimeStr = TimeSpan.Parse(startTime).Add(TimeSpan.FromHours(1)).ToString(@"hh\:mm");
+            UpdateModelDateTimes();
+        }
+
+        private void OnStartTimeChanged(ChangeEventArgs e)
+        {
+            selectedStartTimeStr = e.Value?.ToString() ?? "09:00";
+            UpdateModelDateTimes();
+        }
+
+        private void OnEndTimeChanged(ChangeEventArgs e)
+        {
+            selectedEndTimeStr = e.Value?.ToString() ?? "10:00";
+            UpdateModelDateTimes();
+        }
+
+        private bool IsSlotInPast(string timeStr) =>
+            selectedDate is not null && selectedDate.Value.Date.Add(TimeSpan.Parse(timeStr)) < DateTime.Now;
+
+        private bool IsTimeSlotBooked(string timeStr)
+        {
+            if (selectedDate == null) return false;
+
+            TimeSpan time = TimeSpan.Parse(timeStr);
+            DateTime checkingSlot = selectedDate.Value.Date.Add(time);
+
+            // Disables the dropdown item if it lands inside an existing booking window
+            return existingBookings.Any(b => checkingSlot >= b.StartDateTime && checkingSlot < b.EndDateTime);
+        }
+
+        private void UpdateModelDateTimes()
+        {
+            if (selectedDate == null || string.IsNullOrEmpty(selectedStartTimeStr) || string.IsNullOrEmpty(selectedEndTimeStr)) return;
+
+            // Construct final
+            BookingInfo.StartDateTime = selectedDate.Value.Date.Add(TimeSpan.Parse(selectedStartTimeStr));
+            BookingInfo.EndDateTime = selectedDate.Value.Date.Add(TimeSpan.Parse(selectedEndTimeStr));
+
+            // Evaluate validation
+            if (BookingInfo.StartDateTime >= BookingInfo.EndDateTime)
+            {
+                hasOverlapError = true;
+                return;
+            }
+
+            // Comprehensive overlap protection block logic
+            hasOverlapError = existingBookings.Any(b =>
+                BookingInfo.StartDateTime < b.EndDateTime && BookingInfo.EndDateTime > b.StartDateTime);
+        }
+
+        private async Task SubmitBooking()
+        {
+            var clientId = Model.ClientListModel.SelectedItemIds.Select(int.Parse).FirstOrDefault();
+            if (selectedDate == null || hasOverlapError || noSlotsAvailable || string.IsNullOrEmpty(selectedStartTimeStr) || clientId == 0) return;
+            bookingMessage = null;
+            bookingErrorMessage = null;
+            if (BookingInfo.StartDateTime < DateTime.Now)
+            {
+                SelectFirstAvailableSlot();
+                return;
+            }
+
+            var bookedStart = BookingInfo.StartDateTime;
+            try
+            {
+                await using var db = await DbFactory.CreateDbContextAsync();
+                db.Appointments.Add(new Appointment
+                {
+                    StartDateTime = BookingInfo.StartDateTime,
+                    ServiceType = GetSlotService(selectedStartTimeStr),
+                    EndDateTime = BookingInfo.EndDateTime,
+                    ClientId = clientId
+                });
+                await db.SaveChangesAsync();
+            }
+            catch (Exception ex)
+            {
+                bookingErrorMessage = $"Could not save booking: {ex.GetBaseException().Message}";
+                return;
+            }
+
+            bookingMessage = $"Booked {bookedStart:g}.";
+            await LoadBookingsAsync();
+            slotServices.Clear();
+            SelectFirstAvailableSlot();
+        }
+    }
+
+<!-- Include standard Bootstrap row-cols-7 utility helper if missing -->
+<style>
+    .row-cols-7 > * {
+        flex: 0 0 auto;
+        width: 14.2857142857%;
+    }
+
+    .calendar-day {
+        cursor: pointer;
+        border-radius: 4px;
+        padding: 8px 0;
+        transition: 0.2s;
+    }
+
+    .calendar-day:hover:not(.disabled) {
+        background-color: #e9ecef;
+    }
+
+    .calendar-day.active {
+        background-color: #0d6efd !important;
+        color: white !important;
+    }
+
+    .calendar-day.disabled {
+        color: #dee2e6;
+        cursor: not-allowed;
+    }
+</style>

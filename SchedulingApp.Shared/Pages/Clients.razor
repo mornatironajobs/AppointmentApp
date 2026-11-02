@@ -1,0 +1,60 @@
+@page "/clients"
+@using Microsoft.EntityFrameworkCore
+@using SchedulingApp.Shared.Data
+@using SchedulingApp.Shared.Models
+@inject IDbContextFactory<AppDbContext> DbFactory
+@inject NavigationManager Navigation
+
+<PageTitle>Clients</PageTitle>
+
+<h1>Clients</h1>
+
+@if (clients == null)
+{
+    <p><em>Loading...</em></p>
+}
+else
+{
+    @if (clients.Count == 0)
+    {
+        <p>No clients found.</p>
+    }
+    else
+    {
+        <table class="table table-hover">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Phone Number</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var c in clients)
+                {
+                    <tr style="cursor: pointer;" title="Edit client" @onclick="() => EditClient(c.Id)">
+                        <td>@c.Name</td>
+                        <td>@c.Email</td>
+                        <td>@c.PhoneNumber</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+
+    <button type="button" class="btn btn-primary" @onclick="AddClient">Add Client</button>
+}
+
+@code {
+    private List<ClientModel>? clients;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await using var db = await DbFactory.CreateDbContextAsync();
+        clients = await db.Clients.AsNoTracking().OrderBy(c => c.Name).ToListAsync();
+    }
+
+    private void EditClient(int id) => Navigation.NavigateTo($"/client/{id}");
+
+    private void AddClient() => Navigation.NavigateTo("/client");
+}
